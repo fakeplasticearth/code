@@ -1,0 +1,266 @@
+---
+title: ''
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning = FALSE, message=FALSE}
+library(pracma)
+library(ggplot2)
+library(RVCompare)
+library(dplyr)
+library(numDeriv)
+```
+
+
+```{r}
+.density <- function(x, gamma = 0.5) {
+    return ((sqrt(x) + 1 / sqrt(x)) / (2 * gamma * x) * dnorm((sqrt(x) - 1 / sqrt(x)) / gamma))
+}
+
+.log.density <- function(x, gamma = 0.5) {
+  return (log(.density(x, gamma)))
+}
+```
+
+Первая производная
+
+$$
+  -\frac{(\gamma^2 + 1)x^2 + (3\gamma^2 - 1)x + x^3 - 1}{2\gamma^2x^2(x + 1)}
+$$
+
+Вторая производная
+
+$$
+  \frac{\gamma^2x^3 + (6\gamma^2 - 2)x^2 + (3\gamma^2 - 4)x - 2}{2\gamma^2x^3(1 + x)^2}
+$$
+
+Т.е. точка $x \approx 4.95166$ при $\gamma = 0.5$ это точка перегиба. А при $\gamma = 0.15$ точка перегиба это $x \approx 85$.
+
+Строим миноранту и мажоранту. 
+```{r}
+start <- 0.05
+end <- 15
+
+points <- c(seq(start, 1, length.out = 8), seq(1.2, 4.95166, length.out = 3), seq(5.5, end, length.out = 9))
+print(paste0("Number of points: ", length(points)))
+
+points_log_d <- .log.density(points)
+
+lower_lines <- function(x, points, points_log_d) {
+  if(x %in%  points)
+    return(points_log_d[match(x, points)])
+  
+  x_grid_left <- max(points[points <= x])
+  x_grid_right <- min(points[points > x])
+  
+  x_grid_left_index <- match(x_grid_left, points)
+  x_grid_right_index <- match(x_grid_right, points)
+  
+  log_d_left <- points_log_d[x_grid_left_index]
+  log_d_right <- points_log_d[x_grid_right_index]
+  return(((x_grid_right - x) * log_d_left + (
+    x - x_grid_left) * log_d_right) / (x_grid_right - x_grid_left))
+}
+
+upper_lines <- function(x, points, points_log_d) {
+  if(x %in%  points)
+    return(points_log_d[match(x, points)])
+  
+  x_grid_left <- max(points[points <= x])
+  x_grid_right <- min(points[points > x])
+  
+  x_grid_left_index <- match(x_grid_left, points)
+  x_grid_right_index <- match(x_grid_right, points)
+  
+  log_d_left <- points_log_d[x_grid_left_index]
+  log_d_right <- points_log_d[x_grid_right_index]
+  
+  x_grid_b_left <- points[x_grid_left_index - 1]
+  x_grid_a_right <- points[x_grid_right_index + 1]
+  
+  log_d_b_left <- points_log_d[x_grid_left_index - 1]
+  log_d_a_right <- points_log_d[x_grid_right_index + 1]
+  
+  if(x_grid_left_index == 1) 
+    return(((x_grid_a_right - x) * log_d_right + (x - x_grid_right) * log_d_a_right) / (x_grid_a_right - x_grid_right))
+  
+  if(x_grid_right_index == length(points)) 
+    return(((x_grid_left - x) * log_d_b_left + (x - x_grid_b_left) * log_d_left) / (x_grid_left - x_grid_b_left))
+  
+  return(min(((x_grid_left - x) * log_d_b_left + (x - x_grid_b_left) * log_d_left) / (x_grid_left - x_grid_b_left),
+             ((x_grid_a_right - x) * log_d_right + (x - x_grid_right) * log_d_a_right) / (x_grid_a_right - x_grid_right)))
+}
+
+true_lower_lines <- function(x, points, points_log_d) {
+  return(ifelse(x <= 4.95166, lower_lines(x, points, points_log_d), upper_lines(x, points, points_log_d)))
+}
+
+true_upper_lines <- function(x, points, points_log_d) {
+  return(ifelse(x <= 4.95166, upper_lines(x, points, points_log_d), lower_lines(x, points, points_log_d)))
+}
+```
+
+```{r}
+  log_d_lower_lines <- function(x) {
+    sapply(x, true_lower_lines, points, points_log_d)
+  }
+  
+  log_d_upper_lines <- function(x) {
+    sapply(x, true_upper_lines, points, points_log_d)
+  }
+  
+  x <- seq(start, end, 0.01)
+  
+  plot_df <- data.frame(X = x, minp = log_d_lower_lines(x),
+                        maxp = log_d_upper_lines(x), den = .log.density(x))
+  
+  png("tmp_plot.png", height = 2000, width = 3000)
+  
+  ggplot(plot_df) + 
+    geom_line(aes(x = X, y = den, colour = "ln(density)"), size = 1) + 
+    geom_line(aes(x = X, y = minp, colour = "min"), size = 0.7) + 
+    geom_line(aes(x = X, y = maxp, colour = "max"), size = 0.7) + 
+    scale_colour_manual("Function", values=c("black","blue", "red")) 
+  
+  dev.off()
+```
+
+
+Найдем $z$.
+```{r}
+z_points <- c()
+a <- c()
+b <- c()
+
+for(i in 1:(length(points) - 1)) {
+  a <- c(a, (points_log_d[i + 1] - points_log_d[i]) / (points[i + 1] - points[i]))
+  b <- c(b, points_log_d[i + 1] - points[i + 1] * a[i])
+}
+
+for (i in 1:9) {
+  z_points <- c(z_points, (b[i + 2] - b[i]) / (a[i] - a[i + 2]))
+}
+
+z_points <- c(start, z_points, 4.95166, points[points > 4.95166])
+z_points
+```
+
+Моделирование $S_k(x)$
+
+$$
+\begin{equation*}
+  w_j = \int_{z_{j - 1}}^{z_j} e^{u_k(x)}dx
+\end{equation*}
+$$
+
+```{r, warning = FALSE}
+exp_upper_line <- function(x, points, points_log_d) {
+  return(exp(true_upper_lines(x, points, points_log_d)))
+}
+
+exp_upper_line_plot <- function(x) {
+  sapply(x, exp_upper_line, points, points_log_d)
+}
+
+
+w <- c()
+for(i in 1:(length(z_points) - 1)) {
+  val <- integrate(exp_upper_line_plot, lower = z_points[i], upper = z_points[i + 1])$value
+  w <- c(w, val)
+  if (val < 0)
+    print(paste0(z_points[i], " ", z_points[i + 1]))
+}
+
+w
+
+vals <- numeric(0) # первые нормированные части интеграла от z_i до z_i+1
+
+for (i in 1:9) {
+  vals <- c(vals, integrate(exp_upper_line_plot, lower = z_points[i], upper = points[i + 1])$value / w[i])
+}
+
+generate_S_k2 <- function(N) {
+  w_indices <- sample.int(n = length(w), size = N, replace = TRUE, prob = (w / sum(w))) # Дискретное случайное на w
+  alpha <- runif(N)
+  
+  current_vals <- ifelse(w_indices <= 9, vals[w_indices], 0)
+  
+  sample <- ifelse(w_indices <= 9,
+                   ifelse(alpha < current_vals, 
+                          (log(a[w_indices + 1] * w[w_indices] * alpha + exp(a[w_indices + 1] * z_points[w_indices] + b[w_indices + 1])) - b[w_indices + 1]) / a[w_indices + 1], 
+                          (log(a[w_indices] * w[w_indices] * (alpha - current_vals) + exp(a[w_indices] * points[w_indices + 1] + b[w_indices])) - b[w_indices]) / a[w_indices]),
+                   (log(a[w_indices] * w[w_indices] * alpha + exp(a[w_indices] * z_points[w_indices] + b[w_indices])) - b[w_indices]) / a[w_indices])
+  
+  return(sample)
+}
+
+res <- generate_S_k2(50)
+
+res
+```
+
+```{r}
+generate_dist <- function(N) {
+  res <- numeric(N)
+  alpha <- numeric(N)
+  rejected <- 1:N
+  k <- N
+  res[rejected] <- generate_S_k2(k)
+  
+  while(k > 0) {
+    res[rejected] <- generate_S_k2(k)
+    alpha[rejected] <- runif(k)
+    
+    rejected <- rejected[alpha[rejected] >= exp(log_d_lower_lines(res[rejected]) - log_d_upper_lines(res[rejected]))]
+    
+    k <- length(rejected)
+    if(k > 0) {
+      h <- .log.density(res[rejected])
+      
+      rejected <- rejected[alpha[rejected] >= exp(h - log_d_upper_lines(res[rejected]))]
+      
+      k <- length(rejected)
+    }
+  }
+  return(res)
+}
+```
+
+```{r, warning = FALSE}
+sample <- generate_dist(1000)
+df <- data.frame(sample)
+
+ggplot(df, aes(x = sample)) +
+  geom_histogram(aes(y=..density..), position="identity", alpha=0.5)+
+  geom_density(alpha = 0.6, aes(colour="estmate.p")) +
+  stat_function(fun = .density, geom="line", aes(colour="p")) +
+  scale_colour_manual("Function", values=c("orange", "black"), breaks = c("estmate.p","p")) +
+  xlim(c(0, 15))
+```
+
+```{r}
+library(extraDistr)
+```
+
+
+```{r}
+ks.test(sample, pfatigue, alpha = 0.5)
+```
+
+```{r, warning = FALSE}
+  pval <- numeric(0)
+
+  for (i in 1:100) {
+    sample <- generate_dist(1000)
+    pval <- c(pval, ks.test(sample, pfatigue, alpha = 0.5)$p.val)
+  }
+
+  plot_df <- data.frame(pval = pval)
+
+  ggplot(plot_df) + 
+    geom_histogram(aes(x = pval))
+```
